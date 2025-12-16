@@ -1,10 +1,12 @@
 use std::fs::File;
 use std::io;
 use std::io::{Read, Seek, SeekFrom, Write};
+use crate::storage::error::FluxError;
 use crate::storage::header::FluxDbFileHeader;
 use crate::storage::page::Page;
 use crate::storage::page_header::{PageHeader, PageType};
 use crate::storage::tables::CatalogRoot::CatalogRoot;
+use crate::storage::tables::ColumnMeta::ColumnMeta;
 use crate::storage::tables::TableMeta::TableMeta;
 
 pub struct FluxPager{
@@ -20,7 +22,7 @@ impl FluxPager{
         self.header.header_size as u64 + page_id * self.header.page_size as u64
     }
 
-    pub fn allocate_page(&mut self, page_type: PageType) -> io::Result<u64> {
+    pub fn allocate_page(&mut self, page_type: PageType) -> FluxError::Result<u64> {
         let page_id = self.header.page_count;
         let offset = self.page_offset(page_id);
         let page_size = self.header.page_size as usize;
@@ -47,7 +49,7 @@ impl FluxPager{
         Ok(page_id)
     }
 
-    pub fn read_page(&mut self, page_id: u64) -> io::Result<Page> {
+    pub fn read_page(&mut self, page_id: u64) -> FluxError::Result<Page> {
         let offset = self.page_offset(page_id);
         let page_size = self.header.page_size as usize;
 
@@ -61,7 +63,7 @@ impl FluxPager{
         Ok(page)
     }
 
-    pub fn read_page_header(&mut self, page_id: u64) -> io::Result<PageHeader>{
+    pub fn read_page_header(&mut self, page_id: u64) -> FluxError::Result<PageHeader>{
         let offset =
             self.header.header_size as u64
                 + page_id * self.header.page_size as u64;
@@ -75,7 +77,7 @@ impl FluxPager{
         Ok(PageHeader::read_from(&buf))
     }
 
-    pub fn write_page(&mut self, page_id: u64, page: &[u8]) -> io::Result<()> {
+    pub fn write_page(&mut self, page_id: u64, page: &[u8]) -> FluxError::Result<()> {
         let offset = self.page_offset(page_id);
 
         assert!(page.len() == self.header.page_size as usize);
@@ -106,7 +108,7 @@ impl FluxPager{
     /// # Panics
     /// Panics if the catalog root page cannot be allocated at page 1. This
     /// indicates a corrupted or improperly initialized database file.
-    pub fn init_catalog_root(&mut self) -> io::Result<()> {
+    pub fn init_catalog_root(&mut self) -> FluxError::Result<()> {
         let page_id = self.allocate_page(PageType::CatalogPage)?;
         assert_eq!(page_id, 0, "CatalogRoot must live on page 1");
 
@@ -150,7 +152,7 @@ impl FluxPager{
     /// # Panics
     /// Panics if the CatalogRoot record is missing or corrupted. This
     /// indicates an uninitialized or irrecoverably corrupted database.
-    pub fn load_catalog_root(&mut self) -> io::Result<CatalogRoot> {
+    pub fn load_catalog_root(&mut self) -> FluxError::Result<CatalogRoot> {
         // CatalogRoot is always stored at page 1, slot 0
         let page_id = 0;
 
@@ -160,7 +162,7 @@ impl FluxPager{
             .read_record(0)
             .expect("CatalogRoot record missing or corrupted");
 
-        Ok(CatalogRoot::deserialize(bytes))
+        Ok(CatalogRoot::deserialize(bytes)?)
     }
 
     /// Updates the CatalogRoot record on disk.
@@ -184,7 +186,7 @@ impl FluxPager{
     ///
     /// # Panics
     /// Panics if the CatalogRoot slot is missing or corrupted.
-    pub fn update_catalog_root(&mut self, root: &CatalogRoot) -> io::Result<()> {
+    pub fn update_catalog_root(&mut self, root: &CatalogRoot) -> FluxError::Result<()> {
         let page_id = 0;
 
         let mut page = self.read_page(page_id)?;
@@ -214,8 +216,8 @@ impl FluxPager{
     pub fn create_table(
         &mut self,
         table_name: &str,
-        // columns: &[ColumnMeta],
-    ) -> std::io::Result<u32>{
+        columns: &[ColumnMeta],
+    ) -> FluxError::Result<u32>{
         let mut root = self.load_catalog_root().unwrap();
         let table_id = root.next_table_id;
         root.next_table_id += 1;
@@ -230,6 +232,23 @@ impl FluxPager{
 
         page.insert_record(&table_meta.serialize()).unwrap();
 
+        for column in columns {
+            let column_id = root.next_column_id;
+
+            let stored_column = ColumnMeta {
+                table_id,
+                column_id,
+                name_length: column.name_length,
+                name: column.name.clone(),
+                data_type: column.data_type,
+                reserved: column.reserved,
+            };
+
+            page.insert_record(&stored_column.serialize()?).unwrap();
+
+            root.next_column_id += 1;
+        }
+
         self.write_page(page_id, &page.buf)?;
         self.update_catalog_root(&root)?;
 
@@ -240,7 +259,7 @@ impl FluxPager{
         &self.header
     }
 
-    pub fn flush_header(&mut self) -> io::Result<()> {
+    pub fn flush_header(&mut self) -> FluxError::Result<()> {
         self.header.write_to(&mut self.file)
     }
 }

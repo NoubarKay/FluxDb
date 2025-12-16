@@ -1,5 +1,6 @@
 use std::io;
 use std::io::{Read, Seek, SeekFrom, Write};
+use crate::storage::error::FluxError;
 
 pub const DB_MAGIC: [u8; 16] = *b"FLUXDB_FAST\0\0\0\0\0";
 pub const DB_HEADER_SIZE: u16 = 128;
@@ -41,7 +42,7 @@ impl FluxDbFileHeader {
         }
     }
 
-    pub fn write_to<W: Write + Seek>(&self, writer: &mut W) -> io::Result<()> {
+    pub fn write_to<W: Write + Seek>(&self, writer: &mut W) -> FluxError::Result<()> {
         writer.seek(SeekFrom::Start(0))?;
 
         writer.write_all(&self.magic)?;
@@ -60,25 +61,19 @@ impl FluxDbFileHeader {
         Ok(())
     }
 
-    pub fn read_from<R: Read + Seek>(reader: &mut R) -> io::Result<Self> {
+    pub fn read_from<R: Read + Seek>(reader: &mut R) -> FluxError::Result<Self> {
         reader.seek(SeekFrom::Start(0))?;
 
         let mut magic = [0u8; 16];
         reader.read_exact(&mut magic)?;
 
         if magic != DB_MAGIC {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Invalid DB magic header",
-            ));
+            return Err(FluxError::FluxError::CorruptData("Invalid DB magic header"));
         }
 
         let header_size = read_u16(reader)?;
         if header_size != DB_HEADER_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Unsupported header size",
-            ));
+            return Err(FluxError::FluxError::CorruptData("Unsupported header size"));
         }
 
         Ok(Self {
@@ -109,25 +104,25 @@ fn current_unix_time() -> u64 {
         .as_secs()
 }
 
-fn read_u8<R: Read>(r: &mut R) -> io::Result<u8> {
+fn read_u8<R: Read>(r: &mut R) -> FluxError::Result<u8> {
     let mut b = [0u8; 1];
     r.read_exact(&mut b)?;
     Ok(b[0])
 }
 
-fn read_u16<R: Read>(r: &mut R) -> io::Result<u16> {
+fn read_u16<R: Read>(r: &mut R) -> FluxError::Result<u16> {
     let mut b = [0u8; 2];
     r.read_exact(&mut b)?;
     Ok(u16::from_le_bytes(b))
 }
 
-fn read_u32<R: Read>(r: &mut R) -> io::Result<u32> {
+fn read_u32<R: Read>(r: &mut R) -> FluxError::Result<u32> {
     let mut b = [0u8; 4];
     r.read_exact(&mut b)?;
     Ok(u32::from_le_bytes(b))
 }
 
-fn read_u64<R: Read>(r: &mut R) -> io::Result<u64> {
+fn read_u64<R: Read>(r: &mut R) -> FluxError::Result<u64> {
     let mut b = [0u8; 8];
     r.read_exact(&mut b)?;
     Ok(u64::from_le_bytes(b))
