@@ -8,6 +8,10 @@ pub const DB_VERSION: u32 = 1;
 
 // const _: () = assert!(size_of::<FluxDbFileHeader>() == 128);
 
+
+// FluxDbFileHeader is the first page of every FluxDB file. It contains
+// metadata about the database file format and global state.
+//
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct FluxDbFileHeader{

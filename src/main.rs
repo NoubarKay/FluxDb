@@ -1,127 +1,150 @@
-mod storage;
-
-use std::fs::File;
+use std::fs::OpenOptions;
 use std::path::Path;
-use crate::storage::file::{create_db_file, open_db_file};
-use crate::storage::header::FluxDbFileHeader;
-use crate::storage::page::Page;
-use crate::storage::page_header::PageType;
-use crate::storage::pager::FluxPager;
-use crate::storage::tables::CatalogRoot::CatalogRoot;
-use crate::storage::tables::TableMeta::TableMeta;
-use crate::storage::error::FluxError;
-use crate::storage::tables::ColumnMeta::ColumnMeta;
-use crate::storage::tables::ColumnType::ColumnType;
+use std::time::Instant;
+use crate::general::catalog::Catalog;
+use crate::general::database::Database;
+use crate::records::db_record::DbRecord;
 
-fn main() -> FluxError::Result<()> {
-    let path = Path::new("test.flxdb");
+mod general;
+mod helpers;
+mod pager;
+mod records;
 
-    let mut pager = init_db_file(path)?;
-    
-    let page = pager.read_page(0).unwrap();
+fn main() -> std::io::Result<()> {
+    let mut db = Database::open(Path::new("test.flxdb"))?;
 
-    print_table_meta_from_slot(&page, 1).unwrap();
-    print_column_meta_from_slot(&page, 2).unwrap();
-    print_column_meta_from_slot(&page, 3).unwrap();
-    print_column_meta_from_slot(&page, 4).unwrap();
-    
-    Ok(())
-}
+    println!("=== Catalog Cache Tests ===");
+    let c = &db.catalog;
 
-pub fn init_db_file(path: &Path) -> FluxError::Result<FluxPager> {
-    let mut file = create_db_file(path)?;
-    let header = FluxDbFileHeader::new(4096);
-    header.write_to(&mut file)?;
+    // 1️⃣ Cached catalog access timing
+    let start = Instant::now();
+    let catalog1 = &db.catalog;
+    let t1 = start.elapsed();
 
-    let mut header = FluxDbFileHeader::read_from(&mut file)?;
+    let start = Instant::now();
+    let catalog2 = &db.catalog;
+    let t2 = start.elapsed();
 
-    let mut pager = FluxPager::new(file, header);
+    println!("Cached catalog access #1: {:?}", t1);
+    println!("Cached catalog access #2: {:?}", t2);
 
-    pager.init_catalog_root().expect("TODO: panic message");
-
-    let columns = vec![
-        ColumnMeta {
-            table_id: 0, // will be assigned inside create_table
-            column_id: 0, // will be assigned inside create_table
-            name_length: 2,
-            name: b"id".to_vec(),
-            data_type: ColumnType::Int64,
-            reserved: [0; 20],
-        },
-        ColumnMeta {
-            table_id: 0,
-            column_id: 0,
-            name_length: 5,
-            name: b"email".to_vec(),
-            data_type: ColumnType::Varchar,
-            reserved: [0; 20],
-        },
-        ColumnMeta {
-            table_id: 0,
-            column_id: 0,
-            name_length: 10,
-            name: b"first_name".to_vec(),
-            data_type: ColumnType::Varchar,
-            reserved: [0; 20],
-        },
-        ColumnMeta {
-            table_id: 0,
-            column_id: 0,
-            name_length: 9,
-            name: b"last_name".to_vec(),
-            data_type: ColumnType::Varchar,
-            reserved: [0; 20],
-        },
-        ColumnMeta {
-            table_id: 0,
-            column_id: 0,
-            name_length: 10,
-            name: b"created_at".to_vec(),
-            data_type: ColumnType::Int64, // unix timestamp for now
-            reserved: [0; 20],
-        },
-    ];
-
-    pager.create_table("customers", &columns).unwrap();
-    
-    Ok(pager)
-}
-
-fn print_table_meta_from_slot(page: &Page, slot_id: u16) -> FluxError::Result<()> {
-    let slot = page
-        .read_slot(slot_id)
-        .ok_or_else(|| FluxError::FluxError::NotFound("slot not found"))?;
-
-    let start = slot.offset as usize;
-    let end = start + slot.length as usize;
-    let record_bytes = &page.buf[start..end];
-
-    let table_meta = TableMeta::deserialize(record_bytes);
-
-    println!("table id: {}", table_meta.table_id);
-    println!("table name: {}", table_meta.name);
-    Ok(())
-}
-
-fn print_column_meta_from_slot(page: &Page, slot_id: u16) -> FluxError::Result<()> {
-    let slot = page
-        .read_slot(slot_id)
-        .ok_or_else(|| FluxError::FluxError::NotFound("slot not found"))?;
-
-    let start = slot.offset as usize;
-    let end = start + slot.length as usize;
-    let record_bytes = &page.buf[start..end];
-
-    let mut reader = record_bytes;
-    let column_meta = ColumnMeta::read_from(&mut reader)?;
-
-    println!("table id   : {}", column_meta.table_id);
-    println!("column id  : {}", column_meta.column_id);
-    println!(
-        "column name: {}",
-        String::from_utf8_lossy(&column_meta.name)
+    assert!(
+        t1 < std::time::Duration::from_micros(10),
+        "t1 cached catalog access is too slow"
     );
-    println!("data type  : {:?}", column_meta.data_type);
+    assert!(
+        t2 < std::time::Duration::from_micros(1),
+        "t2 cached catalog access is too slow"
+    );
+
+    println!(
+        "Same catalog instance: {}",
+        std::ptr::eq(catalog1, catalog2)
+    );
+
+    // 2️⃣ Index integrity checks
+    println!("\n=== Catalog Index Integrity ===");
+
+    for (name, table_id) in &db.catalog.tables_by_name {
+        let table = db.catalog.tables_by_id.get(table_id)
+            .expect("table_id missing in tables_by_id");
+        assert_eq!(
+            &table.name,
+            name,
+            "table name mismatch between indexes"
+        );
+    }
+
+    for (table_id, columns) in &db.catalog.columns_by_table {
+        assert!(
+            db.catalog.tables_by_id.contains_key(table_id),
+            "columns exist for unknown table_id={table_id}"
+        );
+
+        let mut seen = std::collections::HashSet::new();
+        for col in columns {
+            assert!(
+                seen.insert(col.column_id),
+                "duplicate column_id {} in table_id {}",
+                col.column_id,
+                table_id
+            );
+        }
+    }
+
+    println!("Catalog indexes validated ✔");
+
+    // 3️⃣ Functional lookup test
+    println!("\n=== Functional Lookup Test ===");
+
+    if let Some(table_id) = db.catalog.tables_by_name.get("users") {
+        let table = &db.catalog.tables_by_id[table_id];
+        println!("Table 'users' (id={})", table.table_id);
+
+        if let Some(cols) = db.catalog.columns_by_table.get(table_id) {
+            for col in cols {
+                println!("  - {} (id={})", col.name, col.column_id);
+            }
+        }
+    }
+
+    // 4️⃣ Schema mutation test
+    println!("\n=== Schema Mutation Test ===");
+
+    let start = Instant::now();
+    db.create_table("clients")?;
+    let t3 = start.elapsed();
+
+    println!("CREATE TABLE took: {:?}", t3);
+
+    let table_id = db.catalog.tables_by_name["clients"];
+    let table = &db.catalog.tables_by_id[&table_id];
+
+    println!(
+        "New table loaded in catalog: {} (id={})",
+        table.name,
+        table.table_id
+    );
+
+    // 5️⃣ Reload & compare (disk ↔ memory)
+    println!("\n=== Disk Reload Consistency ===");
+
+    let mut db2 = Database::open(Path::new("test.flxdb"))?;
+
+    assert_eq!(
+        db.catalog.tables_by_id.len(),
+        db2.catalog.tables_by_id.len(),
+        "table count mismatch after reload"
+    );
+
+    assert_eq!(
+        db.catalog.columns_by_table.len(),
+        db2.catalog.columns_by_table.len(),
+        "column count mismatch after reload"
+    );
+
+    println!("Disk reload consistency verified ✔");
+
+    // 6️⃣ Performance regression test
+    println!("\n=== Performance Regression Test ===");
+
+    let iterations = 100_000;
+    let start = Instant::now();
+
+    for _ in 0..iterations {
+        let table_id = db.catalog.tables_by_name["users"];
+        let _cols = &db.catalog.columns_by_table[&table_id];
+    }
+
+    let avg = start.elapsed() / iterations;
+    println!("Avg indexed lookup: {:?}", avg);
+
+    assert!(
+        avg < std::time::Duration::from_micros(1),
+        "indexed lookup too slow"
+    );
+
+    println!("\nAll catalog tests passed ✔");
 
     Ok(())
 }

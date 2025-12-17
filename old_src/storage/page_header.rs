@@ -42,10 +42,3 @@ impl PageHeader{
     }
 }
 
-#[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum PageType {
-    DataPage    = 1,
-    IndexPage   = 2,
-    CatalogPage = 3,
-}
