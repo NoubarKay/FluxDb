@@ -14,10 +14,12 @@ pub struct Database {
 impl Database {
     /// Opens an existing database or creates a new one if it does not exist.
     /// Loads the catalog ONCE and caches it in memory.
-    pub fn open(path: &Path) -> Result<Self> {
+    pub fn open(path: &Path, initialize: bool) -> Result<Self> {
         // 1️⃣ Ensure file + header exist
         let initializer = Initializer::new(path);
-        // initializer.init_db_file()?; // safe to call multiple times
+        if initialize {
+            initializer.init_db_file(); // safe to call multiple times
+        }
 
         // 2️⃣ Open file
         let file = OpenOptions::new()
@@ -32,7 +34,17 @@ impl Database {
         let mut pager = Pager::new(file, header);
 
         // 5️⃣ Load catalog ONCE
-        let catalog = pager.load_catalog()?;
+        let catalog = match pager.load_catalog() {
+            Ok(catalog) => catalog,
+            Err(e) => {
+                eprintln!("Failed to load catalog: {e}");
+
+                // 👇 decide what “do something” means
+                // Option A: initialize a new catalog
+                pager.init_catalog_root()?;
+                pager.load_catalog()?
+            }
+        };
         // catalog.validate(); // optional but recommended
 
         Ok(Self {
@@ -57,23 +69,23 @@ impl Database {
     }
 
     // Adds a column (disk + memory)
-    // pub fn add_column(
-    //     &mut self,
-    //     table_name: &str,
-    //     column: crate::records::table_column::TableColumn,
-    // ) -> Result<()> {
-    //     let table_id = *self.catalog.tables_by_name
-    //         .get(table_name)
-    //         .ok_or_else(|| Error::new(std::io::ErrorKind::NotFound, "table not found"))?;
-    //
-    //     let col = self.pager.add_column(table_id, column)?;
-    //
-    //     self.catalog
-    //         .columns_by_table
-    //         .entry(table_id)
-    //         .or_default()
-    //         .push(col);
-    //
-    //     Ok(())
-    // }
+    pub fn add_column(
+        &mut self,
+        table_name: &str,
+        column: crate::records::table_column::TableColumn,
+    ) -> Result<()> {
+        let table_id = *self.catalog.tables_by_name
+            .get(table_name)
+            .ok_or_else(|| Error::new(std::io::ErrorKind::NotFound, "table not found"))?;
+    
+        let col = self.pager.add_column(table_name, column)?;
+    
+        self.catalog
+            .columns_by_table
+            .entry(table_id)
+            .or_default()
+            .push(col);
+    
+        Ok(())
+    }
 }
