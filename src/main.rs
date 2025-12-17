@@ -79,16 +79,21 @@ fn main() -> std::io::Result<()> {
     // 3️⃣ Functional lookup test
     println!("\n=== Functional Lookup Test ===");
     let start = Instant::now();
-    if let Some(table_id) = db.catalog.tables_by_name.get("users") {
-        let table = &db.catalog.tables_by_id[table_id];
-        println!("Table 'users' (id={})", table.table_id);
+    for (name, _) in &db.catalog.tables_by_name {
+        let table_name: &str = name.as_str();
 
-        if let Some(cols) = db.catalog.columns_by_table.get(table_id) {
-            for col in cols {
-                println!("  - {} (id={})", col.name, col.column_id);
+        if let Some(table_id) = db.catalog.tables_by_name.get(table_name) {
+            let table = &db.catalog.tables_by_id[table_id];
+            println!("Table '{}' (id={})", table_name,  table.table_id);
+
+            if let Some(cols) = db.catalog.columns_by_table.get(table_id) {
+                for col in cols {
+                    println!("  - {} (id={})", col.name, col.column_id);
+                }
             }
         }
     }
+
     let functionaltest = start.elapsed();
     println!("Functional lookup took: {:?}", functionaltest);
 
