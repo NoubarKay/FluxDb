@@ -1,4 +1,3 @@
-use crate::pager::page_type::PageType;
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

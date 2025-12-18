@@ -1,12 +1,9 @@
 use std::io::Error;
-use crate::general::header::Header;
 use crate::pager::page_header::PageHeader;
 use crate::pager::page_type::PageType;
 use crate::pager::slot::Slot;
 use crate::records::db_record::DbRecord;
 use crate::records::record::Record;
-use crate::records::record_type::RecordType;
-use crate::records::table_meta::TableMeta;
 
 pub struct Page{
     pub header: PageHeader,
@@ -16,7 +13,7 @@ pub struct Page{
 impl Page{
     const HEADER_SIZE: usize = PageHeader::SIZE;
     pub fn new(page_size: usize, page_type: PageType, page_id: u32) -> Self {
-        let mut header = PageHeader::new(
+        let header = PageHeader::new(
             PageHeader::SIZE as u16,
             page_size as u16,
             page_type,
@@ -92,5 +89,24 @@ impl Page{
     pub fn from_buffer(buf: Vec<u8>) -> Self {
         let header = PageHeader::read_from(&buf[..PageHeader::SIZE]);
         Self { header, buf }
+    }
+
+    pub fn read_slot(&self, slot_id: u16) -> Option<Slot> {
+        if slot_id >= self.header.slot_count {
+            return None;
+        }
+
+        let page_size = self.buf.len();
+        let slot_pos =
+            page_size - ((slot_id as usize + 1) * Slot::SIZE);
+
+        Some(Slot::read_from(
+            &self.buf[slot_pos..slot_pos + Slot::SIZE],
+        ))
+    }
+
+    pub fn iter_slots(&self) -> impl Iterator<Item = (u16, Slot)> + '_ {
+        (0..self.header.slot_count)
+            .map(|id| (id, self.read_slot(id).unwrap()))
     }
 }

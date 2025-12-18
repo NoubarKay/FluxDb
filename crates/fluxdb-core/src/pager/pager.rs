@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Error, Read, Seek, SeekFrom, Write};
@@ -12,14 +13,15 @@ use crate::records::record_type::RecordType;
 use crate::records::table_column::TableColumn;
 use crate::records::table_meta::TableMeta;
 
+
 pub struct Pager {
-    header: Header,
-    file: File,
+    pub header: Header,
+    file: RefCell<File>,
 }
 
 impl Pager {
     pub fn new(file: File, header: Header) -> Self {
-        Self { file, header }
+        Self { file: RefCell::new(file), header }
     }
 
     pub fn page_offset(&self, page_id: u64) -> u64 {
@@ -31,43 +33,49 @@ impl Pager {
         let offset = self.page_offset(page_id);
         let page_size = self.header.page_size as usize;
 
-        self.file.seek(SeekFrom::Start(offset))?;
-
         let page = Page::new(page_size, page_type, page_id as u32);
 
-        self.file.write_all(&page.buf)?;
-        self.file.flush()?;
+        // ✅ scope the file borrow so it DROPS before flush_header()
+        {
+            let mut file = self.file.borrow_mut();
+            file.seek(SeekFrom::Start(offset))?;
+            file.write_all(&page.buf)?;
+            file.flush()?;
+        } // 👈 borrow released here
 
         self.header.page_count += 1;
-        self.flush_header()?;
+        self.flush_header()?; // ✅ now safe
 
         Ok(page)
     }
 
-    pub fn read_page(&mut self, page_id: u64) -> Result<Page, Error> {
+    pub fn read_page(&self, page_id: u64) -> Result<Page, Error> {
         let offset = self.page_offset(page_id);
         let page_size = self.header.page_size as usize;
 
-        self.file.seek(SeekFrom::Start(offset))?;
+        let mut file = self.file.borrow_mut();
+        file.seek(SeekFrom::Start(offset))?;
 
         let mut buf = vec![0u8; page_size];
-        self.file.read_exact(&mut buf)?;
+        file.read_exact(&mut buf)?;
 
         Ok(Page::from_buffer(buf))
     }
 
     pub fn write_page(&mut self, page_id: u64, page: &Page) -> Result<(), Error> {
         let offset = self.page_offset(page_id);
-        self.file.seek(SeekFrom::Start(offset))?;
-        self.file.write_all(&page.buf)?;
-        self.file.flush()?;
+        let mut file = self.file.borrow_mut();
+        file.seek(SeekFrom::Start(offset))?;
+        file.write_all(&page.buf)?;
+        file.flush()?;
         Ok(())
     }
 
-    pub fn flush_header(&mut self) -> Result<(), Error> {
-        self.file.seek(SeekFrom::Start(0))?;
-        self.header.write_to(&mut self.file)?;
-        self.file.flush()?;
+    pub fn flush_header(&self) -> Result<(), Error> {
+        let mut file = self.file.borrow_mut();
+        file.seek(SeekFrom::Start(0))?;
+        self.header.write_to(&mut *file)?;
+        file.flush()?;
         Ok(())
     }
 

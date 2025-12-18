@@ -37,8 +37,6 @@ impl Database {
         let catalog = match pager.load_catalog() {
             Ok(catalog) => catalog,
             Err(e) => {
-                eprintln!("Failed to load catalog: {e}");
-
                 // 👇 decide what “do something” means
                 // Option A: initialize a new catalog
                 pager.init_catalog_root()?;
@@ -47,10 +45,17 @@ impl Database {
         };
         // catalog.validate(); // optional but recommended
 
-        Ok(Self {
+        let mut db =Self {
             pager,
             catalog,
-        })
+        };
+
+
+        if(initialize){
+            db.seed_schema().unwrap();
+        }
+
+        Ok(db)
     }
 
     /// Creates a table (disk + memory)
@@ -86,6 +91,152 @@ impl Database {
             .or_default()
             .push(col);
     
+        Ok(())
+    }
+
+    fn seed_schema(&mut self) -> std::io::Result<()> {
+        use crate::records::table_column::TableColumn;
+
+        let tables = [
+            ("users", vec![
+                ("id"),
+                ("first_name"),
+                ("last_name"),
+                ("email"),
+                ("password_hash"),
+                ("dob"),
+                ("is_active"),
+                ("created_at"),
+                ("updated_at"),
+                ("deleted_at"),
+            ]),
+            ("orders", vec![
+                ("id"),
+                ("user_id"),
+                ("status"),
+                ("subtotal"),
+                ("tax"),
+                ("total"),
+                ("currency"),
+                ("created_at"),
+                ("updated_at"),
+                ("deleted_at"),
+            ]),
+            ("products", vec![
+                ("id"),
+                ("sku"),
+                ("name"),
+                ("description"),
+                ("price"),
+                ("stock"),
+                ("category_id"),
+                ("is_active"),
+                ("created_at"),
+                ("updated_at"),
+            ]),
+            ("categories", vec![
+                ("id"),
+                ("name"),
+                ("slug"),
+                ("parent_id"),
+                ("sort_order"),
+                ("is_active"),
+                ("created_at"),
+                ("updated_at"),
+                ("deleted_at"),
+                ("metadata"),
+            ]),
+            ("payments", vec![
+                ("id"),
+                ("order_id"),
+                ("provider"),
+                ("provider_ref"),
+                ("amount"),
+                ("currency"),
+                ("status"),
+                ("paid_at"),
+                ("created_at"),
+                ("updated_at"),
+            ]),
+            ("addresses", vec![
+                ("id"),
+                ("user_id"),
+                ("line1"),
+                ("line2"),
+                ("city"),
+                ("country"),
+                ("postal_code"),
+                ("is_default"),
+                ("created_at"),
+                ("updated_at"),
+            ]),
+            ("sessions", vec![
+                ("id"),
+                ("user_id"),
+                ("token"),
+                ("ip_address"),
+                ("user_agent"),
+                ("expires_at"),
+                ("revoked_at"),
+                ("created_at"),
+                ("updated_at"),
+                ("last_seen_at"),
+            ]),
+            ("roles", vec![
+                ("id"),
+                ("name"),
+                ("description"),
+                ("is_system"),
+                ("created_at"),
+                ("updated_at"),
+                ("deleted_at"),
+                ("permissions"),
+                ("priority"),
+                ("metadata"),
+            ]),
+            ("user_roles", vec![
+                ("id"),
+                ("user_id"),
+                ("role_id"),
+                ("assigned_by"),
+                ("assigned_at"),
+                ("expires_at"),
+                ("is_active"),
+                ("created_at"),
+                ("updated_at"),
+                ("deleted_at"),
+            ]),
+            ("audit_logs", vec![
+                ("id"),
+                ("actor_id"),
+                ("action"),
+                ("entity"),
+                ("entity_id"),
+                ("payload"),
+                ("ip_address"),
+                ("created_at"),
+                ("request_id"),
+                ("severity"),
+            ]),
+        ];
+
+        for (table_name, columns) in tables {
+            if !self.catalog.tables_by_name.contains_key(table_name) {
+                self.create_table(table_name)?;
+            }
+
+            for (col_name) in columns {
+                self.add_column(
+                    table_name,
+                    TableColumn {
+                        column_id: 0, // assigned internally
+                        table_id: 0,  // resolved internally
+                        name: col_name.to_string()
+                    },
+                )?;
+            }
+        }
+
         Ok(())
     }
 }

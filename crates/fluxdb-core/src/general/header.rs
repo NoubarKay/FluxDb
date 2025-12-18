@@ -82,10 +82,10 @@ impl Header{
     /// - This function assumes exclusive access to the file.
     /// - Callers are responsible for ensuring the file is large enough to
     ///   accommodate the header.
-    pub fn write_to<W: Write + Seek>(&mut self, writer: &mut W) -> std::io::Result<()> {
+    pub fn write_to<W: Write + Seek>(&self, writer: &mut W) -> std::io::Result<()> {
         writer.seek(std::io::SeekFrom::Start(0))?;
 
-        self.checksum = self.compute_checksum()?;
+        let checksum = self.compute_checksum()?; // ✅ local, derived
 
         writer.write_all(&self.magic)?;
         writer.write_all(&self.header_size.to_le_bytes())?;
@@ -96,7 +96,7 @@ impl Header{
         writer.write_all(&self.flags.bits().to_le_bytes())?;
         writer.write_all(&self.created_at.to_le_bytes())?;
         writer.write_all(&self.page_count.to_le_bytes())?;
-        writer.write_all(&self.checksum.to_le_bytes())?;
+        writer.write_all(&checksum.to_le_bytes())?; // ✅ write derived value
         writer.write_all(&self.reserved)?;
 
         Ok(())
