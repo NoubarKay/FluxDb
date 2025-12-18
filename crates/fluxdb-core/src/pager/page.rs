@@ -57,7 +57,6 @@ impl Page{
             length: record_len,
         };
 
-        // 3️⃣ Write slot at end of page
         let slot_offset = (self.header.free_end as usize) - Slot::SIZE;
         slot.write_to(&mut self.buf[slot_offset..slot_offset + Slot::SIZE]);
 

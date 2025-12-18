@@ -11,7 +11,7 @@ mod pager;
 mod records;
 
 fn main() -> std::io::Result<()> {
-    let mut db = Database::open(Path::new("test.flxdb"), true)?;
+    let mut db = Database::open(Path::new("../../test.flxdb"), true)?;
 
     seed_schema(&mut db)?;
 
@@ -118,7 +118,7 @@ fn main() -> std::io::Result<()> {
     // 5️⃣ Reload & compare (disk ↔ memory)
     println!("\n=== Disk Reload Consistency ===");
 
-    let mut db2 = Database::open(Path::new("test.flxdb"), false)?;
+    let mut db2 = Database::open(Path::new("../../test.flxdb"), false)?;
 
     assert_eq!(
         db.catalog.tables_by_id.len(),

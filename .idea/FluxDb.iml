@@ -4,7 +4,11 @@
     <content url="file://$MODULE_DIR$">
       <sourceFolder url="file://$MODULE_DIR$/old_src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/fluxdb-core/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/fluxdb-tui/src" isTestSource="false" />
+      <excludeFolder url="file://$MODULE_DIR$/crates/fluxdb-core/target" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
+      <excludeFolder url="file://$MODULE_DIR$/crates/fluxdb-tui/target" />
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
