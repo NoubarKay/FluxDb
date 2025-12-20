@@ -1,7 +1,6 @@
 use std::collections::HashMap;
-use crate::records::table_column::TableColumn;
-use crate::records::table_meta::TableMeta;
-
+use crate::metadata::schema::table_column::TableColumn;
+use crate::metadata::schema::table_meta::TableMeta;
 pub struct Catalog {
     pub tables_by_id: HashMap<u32, TableMeta>,
     pub tables_by_name: HashMap<String, u32>,

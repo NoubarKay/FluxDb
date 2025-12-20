@@ -1,4 +1,4 @@
-use crate::records::record_type::RecordType;
+use crate::metadata::record_type::RecordType;
 
 pub trait DbRecord: Sized {
     const RECORD_TYPE: RecordType;

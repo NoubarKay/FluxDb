@@ -2,17 +2,18 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Error, Read, Seek, SeekFrom, Write};
-use crate::general::catalog::Catalog;
+use crate::engine::catalog::Catalog;
 use crate::general::header::Header;
-use crate::pager::page::Page;
-use crate::pager::page_type::PageType;
-use crate::records::catalog_root::CatalogRoot;
-use crate::records::db_record::DbRecord;
-use crate::records::record::Record;
-use crate::records::record_type::RecordType;
-use crate::records::table_column::TableColumn;
-use crate::records::table_meta::TableMeta;
-
+use crate::metadata::chunks::chunk_meta::ChunkMeta;
+use crate::metadata::db_record::DbRecord;
+use crate::metadata::record::Record;
+use crate::metadata::record_type::RecordType;
+use crate::metadata::schema::catalog_root::CatalogRoot;
+use crate::metadata::schema::column_type::ColumnType;
+use crate::metadata::schema::table_column::TableColumn;
+use crate::metadata::schema::table_meta::TableMeta;
+use crate::storage::page::Page;
+use crate::storage::page_type::PageType;
 
 pub struct Pager {
     pub header: Header,
@@ -310,6 +311,46 @@ impl Pager {
         })
     }
 
+    //TODO: LOOPING OVER ZOMBIE CHUNKS, NEEDS REWORD LATER
+    pub fn load_chunk_metadata(
+        &mut self,
+    ) -> Result<HashMap<(u32, u32), Vec<ChunkMeta>>, Error> {
+        let mut index: HashMap<(u32, u32), Vec<ChunkMeta>> = HashMap::new();
+        let mut page_id = self.header.chunk_catalog_root_page_id;
+
+        if page_id == 0 {
+            return Ok(index);
+        }
+
+        while page_id != 0 {
+            let page = self.read_page(page_id as u64)?;
+
+            for slot in 0..page.header.slot_count {
+                let raw = page.read_record(slot).unwrap();
+                let (record_type, payload) = Record::decode(raw).unwrap();
+
+                if record_type == RecordType::ChunkMeta {
+                    let chunk = ChunkMeta::deserialize(payload)
+                        .map_err(|e| Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+                    index
+                        .entry((chunk.table_id, chunk.column_id))
+                        .or_insert_with(Vec::new)
+                        .push(chunk);
+                }
+            }
+
+            page_id = page.header.next_page_id;
+        }
+
+        // Optional but strongly recommended
+        for chunks in index.values_mut() {
+            chunks.sort_by_key(|c| c.row_start);
+        }
+
+        Ok(index)
+    }
+
     pub fn create_table(&mut self, table_name: &str) -> Result<TableMeta, Error> {
         // 1) Load CatalogRoot (page 0)
         let mut root = self.load_catalog_root()?;
@@ -394,7 +435,8 @@ impl Pager {
     pub fn add_column(
         &mut self,
         table_name: &str,
-        data_type: TableColumn,
+        column_name: &str,
+        column_type: ColumnType,
     ) -> Result<TableColumn, Error> {
         // 1) Resolve table name → table_id
         let table = self.find_table_by_name(table_name)?;
@@ -406,7 +448,8 @@ impl Pager {
         let column = TableColumn {
             column_id,
             table_id: table.table_id,
-            name: data_type.name,
+            name: column_name.into(),
+            column_type
         };
 
         // 3) Insert ColumnMeta into catalog heap

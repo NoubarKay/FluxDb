@@ -5,8 +5,7 @@ use std::thread;
 
 use crossterm::event::{Event, KeyCode, KeyEvent};
 use ratatui::Frame;
-
-use fluxdb_core::general::database::Database;
+use fluxdb_core::engine::database::Database;
 use crate::app::app_context::AppContext;
 use crate::app::screen_action::{Screen, ScreenAction};
 use crate::app::screens::loading::load_event::LoadEvent;

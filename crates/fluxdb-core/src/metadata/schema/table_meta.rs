@@ -1,5 +1,5 @@
-use crate::records::db_record::DbRecord;
-use crate::records::record_type::RecordType;
+use crate::metadata::db_record::DbRecord;
+use crate::metadata::record_type::RecordType;
 
 pub struct TableMeta {
     pub table_id: u32,

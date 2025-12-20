@@ -5,6 +5,7 @@ pub enum RecordType {
     CatalogRoot = 0,
     CatalogTable = 1,
     CatalogColumn = 2,
+    ChunkMeta = 3,
     HeapRow = 10,
     IndexEntry = 20,
 }
@@ -15,6 +16,7 @@ impl RecordType {
             0 => RecordType::CatalogRoot,
             1 => RecordType::CatalogTable,
             2 => RecordType::CatalogColumn,
+            3 => RecordType::CatalogColumn,
             10 => RecordType::HeapRow,
             20 => RecordType::IndexEntry,
             _ => RecordType::CatalogTable, // or panic, your call

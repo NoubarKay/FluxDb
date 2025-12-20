@@ -1,4 +1,4 @@
-use crate::pager::page_type::PageType;
+use crate::storage::page_type::PageType;
 
 #[repr(C)]
 pub struct PageHeader{

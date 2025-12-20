@@ -1,9 +1,9 @@
 use std::io::Error;
-use crate::pager::page_header::PageHeader;
-use crate::pager::page_type::PageType;
-use crate::pager::slot::Slot;
-use crate::records::db_record::DbRecord;
-use crate::records::record::Record;
+use crate::metadata::db_record::DbRecord;
+use crate::metadata::record::Record;
+use crate::storage::page_header::PageHeader;
+use crate::storage::page_type::PageType;
+use crate::storage::slot::Slot;
 
 pub struct Page{
     pub header: PageHeader,

@@ -20,7 +20,8 @@ pub struct Header{
     pub created_at: u64, // 8 BYTES FOR CREATED AT
     pub page_count: u64, // 8 BYTES FOR PAGE COUNT
     pub checksum: u32, // 4 BYTES FOR CHECKSUM
-    pub reserved: [u8; 80] // 80 BYTES FOR RESERVED
+    pub chunk_catalog_root_page_id: u32, // 4 BYTES FOR CHUNK CATALOG ROOT PAGE ID
+    pub reserved: [u8; 76] // 80 BYTES FOR RESERVED
 }
 
 impl Header{
@@ -54,7 +55,8 @@ impl Header{
             created_at: current_unix_time(),   // or unix timestamp later
             page_count: 0,
             checksum: 0,
-            reserved: [0; 80],
+            chunk_catalog_root_page_id: 0,
+            reserved: [0; 76],
         }
     }
 
@@ -97,6 +99,7 @@ impl Header{
         writer.write_all(&self.created_at.to_le_bytes())?;
         writer.write_all(&self.page_count.to_le_bytes())?;
         writer.write_all(&checksum.to_le_bytes())?; // ✅ write derived value
+        writer.write_all(&self.chunk_catalog_root_page_id.to_le_bytes())?;
         writer.write_all(&self.reserved)?;
 
         Ok(())
@@ -112,6 +115,7 @@ impl Header{
         w.write_all(&self.flags.bits().to_le_bytes())?;
         w.write_all(&self.created_at.to_le_bytes())?;
         w.write_all(&self.page_count.to_le_bytes())?;
+        w.write_all(&self.chunk_catalog_root_page_id.to_le_bytes())?;
         w.write_all(&self.reserved)?;
         Ok(())
     }
@@ -189,7 +193,8 @@ impl Header{
         let created_at = read_u64(reader);
         let page_count = read_u64(reader);
         let checksum = read_u32(reader);
-        let mut reserved = [0u8; 80];
+        let chunk_catalog_root_page_id = read_u32(reader);
+        let mut reserved = [0u8; 76];
         reader.read_exact(&mut reserved)?;
 
 
@@ -204,6 +209,7 @@ impl Header{
             created_at,
             page_count,
             checksum,
+            chunk_catalog_root_page_id,
             reserved,
         };
 

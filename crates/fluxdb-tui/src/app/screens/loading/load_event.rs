@@ -1,4 +1,4 @@
-use fluxdb_core::general::database::Database;
+use fluxdb_core::engine::database::Database;
 
 pub enum LoadEvent {
     Progress {

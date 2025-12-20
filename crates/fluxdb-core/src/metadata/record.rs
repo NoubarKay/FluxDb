@@ -1,4 +1,4 @@
-use crate::records::record_type::RecordType;
+use crate::metadata::record_type::RecordType;
 
 pub struct Record<'a>{
     pub record_type: RecordType,

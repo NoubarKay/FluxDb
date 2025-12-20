@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use fluxdb_core::general::database::Database;
+use fluxdb_core::engine::database::Database;
 use crate::app::app_context::AppContext;
 
 pub enum ScreenAction {
