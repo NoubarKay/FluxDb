@@ -12,7 +12,9 @@ use crate::metadata::schema::catalog_root::CatalogRoot;
 use crate::metadata::schema::column_type::ColumnType;
 use crate::metadata::schema::table_column::TableColumn;
 use crate::metadata::schema::table_meta::TableMeta;
+use crate::storage::heap_page_header::HeapPageHeader;
 use crate::storage::page::Page;
+use crate::storage::page_header::PageHeader;
 use crate::storage::page_type::PageType;
 
 pub struct Pager {
@@ -29,12 +31,31 @@ impl Pager {
         Header::SIZE as u64 + page_id * self.header.page_size as u64
     }
 
-    pub fn allocate_page(&mut self, page_type: PageType) -> Result<Page, Error> {
+    pub fn allocate_page(&mut self, page_type: PageInit) -> Result<Page, Error> {
         let page_id = self.header.page_count; // 0-based page ids
         let offset = self.page_offset(page_id);
         let page_size = self.header.page_size as usize;
 
-        let page = Page::new(page_size, page_type, page_id as u32);
+        let page = match page_type {
+            PageInit::Catalog => {
+                Page::new(page_size, PageType::CatalogPage, page_id as u32)
+            },
+            PageInit::Heap => {
+                Page::new(page_size, PageType::HeapPage, page_id as u32)
+            },
+            PageInit::ChunkData {
+                table_id,
+                column_ordinal,
+            } => {
+                Page::new_chunk_data(
+                    page_size,
+                    page_id as u32,
+                    table_id,
+                    column_ordinal,
+                )
+            }
+            _ => panic!("Invalid page type"),
+        };
 
         // ✅ scope the file borrow so it DROPS before flush_header()
         {
@@ -49,6 +70,8 @@ impl Pager {
 
         Ok(page)
     }
+
+
 
     pub fn read_page(&self, page_id: u64) -> Result<Page, Error> {
         let offset = self.page_offset(page_id);
@@ -80,18 +103,18 @@ impl Pager {
         Ok(())
     }
 
-    pub fn insert_record(&mut self, page_id: u64, record: &[u8]) -> Result<u16, Error> {
+    pub fn insert_record(&mut self, page_id: u64, record: &[u8]) -> Result<(), Error> {
         let mut page = self.read_page(page_id)?;
-        let slot_id = page.insert_record(record)?;
+        page.insert_record(record)?;
         self.write_page(page_id, &page)?;
-        Ok(slot_id)
+        Ok(())
     }
 
-    pub fn insert_typed<T: DbRecord>(&mut self, page_id: u64, value: &T) -> Result<u16, Error> {
+    pub fn insert_typed<T: DbRecord>(&mut self, page_id: u64, value: &T) -> Result<(), Error> {
         let mut page = self.read_page(page_id)?;
-        let slot_id = page.insert_typed_record(value)?;
+        page.insert_typed_record(value)?;
         self.write_page(page_id, &page)?;
-        Ok(slot_id)
+        Ok(())
     }
 
     /// Initializes the catalog layout for a brand-new DB file.
@@ -102,14 +125,14 @@ impl Pager {
     /// - Catalog heap pages may be chained via `next_page_id` (0 means end)
     pub fn init_catalog_root(&mut self) -> Result<(), Error> {
         // 1) Allocate page 0: CatalogRoot page (reserved, never used as a heap)
-        let root_page = self.allocate_page(PageType::CatalogPage)?;
+        let root_page = self.allocate_page(PageInit::Catalog)?;
         assert_eq!(
             root_page.header.page_id, 0,
             "CatalogRoot must live on page 0 (reserved)"
         );
 
         // 2) Allocate page 1: the first Catalog HEAP page (where TableMeta/ColumnMeta live)
-        let catalog_heap_root = self.allocate_page(PageType::CatalogPage)?;
+        let catalog_heap_root = self.allocate_page(PageInit::Catalog)?;
         assert_ne!(
             catalog_heap_root.header.page_id, 0,
             "Catalog heap root must not be page 0"
@@ -176,8 +199,9 @@ impl Pager {
 
         while page_id != 0 {
             let page = self.read_page(page_id)?;
+            let layout = HeapPageHeader::read_from(&page.buf[PageHeader::SIZE..PageHeader::SIZE + HeapPageHeader::SIZE]);
 
-            let slot_count = page.header.slot_count;
+            let slot_count = layout.slot_count;
             for i in 0..slot_count {
                 let raw = page.read_record(i).unwrap();
 
@@ -257,8 +281,9 @@ impl Pager {
 
         while page_id != 0 {
             let page = self.read_page(page_id)?;
+            let layout = HeapPageHeader::read_from(&page.buf[PageHeader::SIZE..PageHeader::SIZE + HeapPageHeader::SIZE]);
 
-            for slot in 0..page.header.slot_count {
+            for slot in 0..layout.slot_count {
                 let raw = page.read_record(slot).unwrap();
 
                 let (record_type, payload) = Record::decode(raw).unwrap();
@@ -324,8 +349,9 @@ impl Pager {
 
         while page_id != 0 {
             let page = self.read_page(page_id as u64)?;
+            let layout = HeapPageHeader::read_from(&page.buf[PageHeader::SIZE..PageHeader::SIZE + HeapPageHeader::SIZE]);
 
-            for slot in 0..page.header.slot_count {
+            for slot in 0..layout.slot_count {
                 let raw = page.read_record(slot).unwrap();
                 let (record_type, payload) = Record::decode(raw).unwrap();
 
@@ -381,7 +407,7 @@ impl Pager {
                         page_id = page.header.next_page_id as u64;
                     } else {
                         // Allocate a new catalog heap page
-                        let new_page = self.allocate_page(PageType::CatalogPage)?;
+                        let new_page = self.allocate_page(PageInit::Catalog)?;
                         let new_page_id = new_page.header.page_id;
 
                         // Link pages
@@ -410,7 +436,9 @@ impl Pager {
 
         while page_id != 0 {
             let page = self.read_page(page_id)?;
-            for slot in 0..page.header.slot_count {
+            let layout = HeapPageHeader::read_from(&page.buf[PageHeader::SIZE..PageHeader::SIZE + HeapPageHeader::SIZE]);
+
+            for slot in 0..layout.slot_count {
                 let raw = page.read_record(slot).unwrap();
                 let (ty, payload) = Record::decode(raw).unwrap();
 
@@ -434,12 +462,11 @@ impl Pager {
 
     pub fn add_column(
         &mut self,
-        table_name: &str,
+        table_id: u32,
         column_name: &str,
         column_type: ColumnType,
+        ordinal: u16
     ) -> Result<TableColumn, Error> {
-        // 1) Resolve table name → table_id
-        let table = self.find_table_by_name(table_name)?;
 
         // 2) Load & increment CatalogRoot
         let mut root = self.load_catalog_root()?;
@@ -447,7 +474,8 @@ impl Pager {
 
         let column = TableColumn {
             column_id,
-            table_id: table.table_id,
+            table_id,
+            ordinal,
             name: column_name.into(),
             column_type
         };
@@ -467,7 +495,7 @@ impl Pager {
                     if page.header.next_page_id != 0 {
                         page_id = page.header.next_page_id as u64;
                     } else {
-                        let new_page = self.allocate_page(PageType::CatalogPage)?;
+                        let new_page = self.allocate_page(PageInit::Catalog)?;
                         page.header.next_page_id = new_page.header.page_id;
                         self.write_page(page_id, &page)?;
                         page_id = new_page.header.page_id as u64;
@@ -493,4 +521,14 @@ impl Pager {
         self.write_page(0, &page0)?;
         Ok(())
     }
+}
+
+
+pub enum PageInit {
+    Heap,
+    Catalog,
+    ChunkData {
+        table_id: u32,
+        column_ordinal: u16,
+    },
 }

@@ -1,5 +1,7 @@
 pub mod pager;
 pub mod page;
 mod slot;
-mod page_header;
-mod page_type;
+pub mod page_header;
+pub mod page_type;
+pub mod heap_page_header;
+pub mod chunk_data_header;

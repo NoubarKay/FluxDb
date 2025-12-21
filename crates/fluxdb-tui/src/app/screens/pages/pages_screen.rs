@@ -1,11 +1,13 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, List, ListItem, ListState, Paragraph,
-};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
+
+use fluxdb_core::storage::heap_page_header::HeapPageHeader;
+use fluxdb_core::storage::page::Page;
+use fluxdb_core::storage::page_header::PageHeader;
+use fluxdb_core::storage::page_type::PageType;
 
 use crate::app::app_context::AppContext;
 use crate::app::screen_action::{Screen, ScreenAction};
@@ -32,6 +34,31 @@ impl PagesScreen {
         }
     }
 
+    // ───────────────────────── PAGE INTENSITY ─────────────────────────
+
+    fn page_intensity(&self, page: &Page) -> u32 {
+        match page.header.page_type {
+            PageType::CatalogPage | PageType::HeapPage => {
+                let layout = HeapPageHeader::read_from(
+                    &page.buf[
+                        PageHeader::SIZE
+                            ..PageHeader::SIZE + HeapPageHeader::SIZE
+                        ],
+                );
+                layout.slot_count as u32
+            }
+
+            PageType::DataPage => {
+                // Columnar pages: use written bytes as density signal
+                //todo
+                // page.header.free_start as u32 / 64
+                0
+            }
+
+            _ => 0,
+        }
+    }
+
     // ───────────────────────── STORAGE MINIMAP ─────────────────────────
 
     fn render_minimap(&self, f: &mut Frame, area: Rect, ctx: &AppContext) {
@@ -46,10 +73,7 @@ impl PagesScreen {
 
                 let intensity = page
                     .as_ref()
-                    .map(|p| match self.mode {
-                        ViewMode::Density => p.header.slot_count as u32,
-                        ViewMode::Free => (p.header.free_end - p.header.free_start) as u32,
-                    })
+                    .map(|p| self.page_intensity(p))
                     .unwrap_or(0);
 
                 let c = match intensity {
@@ -59,17 +83,13 @@ impl PagesScreen {
                     _ => '█',
                 };
 
-                if i == selected {
-                    '▌'
-                } else {
-                    c
-                }
+                if i == selected { '▌' } else { c }
             })
             .collect();
 
         let title = match self.mode {
-            ViewMode::Density => " Storage Minimap (slot density) ",
-            ViewMode::Free => " Storage Minimap (free space) ",
+            ViewMode::Density => " Storage Minimap (density) ",
+            ViewMode::Free => " Storage Minimap (free) ",
         };
 
         f.render_widget(
@@ -85,29 +105,52 @@ impl PagesScreen {
     fn render_stats(&self, f: &mut Frame, area: Rect, ctx: &AppContext) {
         let Some(db) = ctx.db else { return };
 
-        let mut empty = 0;
-        let mut total_slots = 0;
-        let mut max_slots = 0;
-        let mut max_page = 0;
+        let mut heap_pages = 0;
+        let mut empty_heap_pages = 0;
+        let mut total_slots: u64 = 0;
+        let mut max_slots: u16 = 0;
+        let mut max_page: u64 = 0;
 
-        for i in 0..db.pager.header.page_count {
-            if let Ok(p) = db.pager.read_page(i) {
-                let slots = p.header.slot_count;
-                total_slots += slots as u64;
+        let mut data_pages = 0;
+        let mut data_bytes_used: u64 = 0;
 
-                if slots == 0 {
-                    empty += 1;
+        for page_id in 0..db.pager.header.page_count {
+            let Ok(p) = db.pager.read_page(page_id) else { continue };
+
+            match p.header.page_type {
+                PageType::CatalogPage | PageType::HeapPage => {
+                    let layout = HeapPageHeader::read_from(
+                        &p.buf[
+                            PageHeader::SIZE
+                                ..PageHeader::SIZE + HeapPageHeader::SIZE
+                            ],
+                    );
+
+                    heap_pages += 1;
+                    total_slots += layout.slot_count as u64;
+
+                    if layout.slot_count == 0 {
+                        empty_heap_pages += 1;
+                    }
+
+                    if layout.slot_count > max_slots {
+                        max_slots = layout.slot_count;
+                        max_page = page_id;
+                    }
                 }
 
-                if slots > max_slots {
-                    max_slots = slots;
-                    max_page = i;
+                PageType::DataPage => {
+                    data_pages += 1;
+                    //todo
+                    // data_bytes_used += p.header.free_start as u64;
                 }
+
+                _ => {}
             }
         }
 
-        let avg = if db.pager.header.page_count > 0 {
-            total_slots as f64 / db.pager.header.page_count as f64
+        let avg_slots = if heap_pages > 0 {
+            total_slots as f64 / heap_pages as f64
         } else {
             0.0
         };
@@ -115,15 +158,21 @@ impl PagesScreen {
         let text = format!(
             "Storage Stats\n\
              ─────────────\n\
-             Total pages     : {}\n\
-             Empty pages     : {}\n\
-             Avg slots/page  : {:.2}\n\
-             Densest page    : {} ({} slots)",
+             Total pages      : {}\n\
+             Heap pages       : {}\n\
+             Data pages       : {}\n\
+             Empty heap pages : {}\n\
+             Avg slots/page   : {:.2}\n\
+             Densest heap     : {} ({} slots)\n\
+             Data used        : {} KB",
             db.pager.header.page_count,
-            empty,
-            avg,
+            heap_pages,
+            data_pages,
+            empty_heap_pages,
+            avg_slots,
             max_page,
-            max_slots
+            max_slots,
+            data_bytes_used / 1024
         );
 
         f.render_widget(
@@ -140,10 +189,31 @@ impl PagesScreen {
 
         let items: Vec<ListItem> = (0..db.pager.header.page_count)
             .map(|id| {
-                let page = db.pager.read_page(id).ok();
-                let slots = page.map(|p| p.header.slot_count).unwrap_or(0);
+                let page = db.pager.read_page(id).ok().unwrap();
 
-                ListItem::new(format!("Page {:03} | slots={}", id, slots))
+                let label = match page.header.page_type {
+                    PageType::CatalogPage | PageType::HeapPage => {
+                        let layout = HeapPageHeader::read_from(
+                            &page.buf[
+                                PageHeader::SIZE
+                                    ..PageHeader::SIZE + HeapPageHeader::SIZE
+                                ],
+                        );
+                        format!("Page {:03} | HEAP | slots={}", id, layout.slot_count)
+                    }
+
+                    PageType::DataPage => {
+                        format!(
+                            "Page {:03} | DATA | used={} bytes",
+                            id,
+                            "TODO"
+                        )
+                    }
+
+                    _ => format!("Page {:03} | {:?}", id, page.header.page_type),
+                };
+
+                ListItem::new(label)
             })
             .collect();
 
@@ -230,4 +300,3 @@ impl Screen for PagesScreen {
         );
     }
 }
-

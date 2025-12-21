@@ -1,55 +1,52 @@
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::path::Path;
-use std::io::{Error, Result};
+use std::io::{Error, ErrorKind, Result};
+use std::ptr::null;
 use crate::engine::catalog::Catalog;
+use crate::engine::chunk_manager::ChunkManager;
 use crate::engine::initializer::Initializer;
 use crate::metadata::schema::column_type::ColumnType;
-use crate::storage::pager::Pager;
+use crate::storage::chunk_data_header::ChunkDataHeader;
+use crate::storage::page_header::PageHeader;
+use crate::storage::page_type::PageType;
+use crate::storage::pager::{PageInit, Pager};
 
 pub struct Database {
-    pub pager: Pager,
     pub catalog: Catalog,
+    pub chunk_manager: ChunkManager,
 }
-
 impl Database {
     /// Opens an existing database or creates a new one if it does not exist.
     /// Loads the catalog ONCE and caches it in memory.
     pub fn open(path: &Path, initialize: bool) -> Result<Self> {
-        // 1️⃣ Ensure file + header exist
         let initializer = Initializer::new(path);
         if initialize {
             initializer.init_db_file(); // safe to call multiple times
         }
 
-        // 2️⃣ Open file
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(path)?;
 
-        // 3️⃣ Read header
         let header = initializer.read_header();
 
-        // 4️⃣ Create pager
-        let mut pager = Pager::new(file, header);
+        let pager = Pager::new(file, header);
+        let mut chunk_manager = ChunkManager::new(pager);
 
-        // 5️⃣ Load catalog ONCE
-        let catalog = match pager.load_catalog() {
+        let catalog = match chunk_manager.load_catalog() {
             Ok(catalog) => catalog,
             Err(e) => {
-                // 👇 decide what “do something” means
-                // Option A: initialize a new catalog
-                pager.init_catalog_root()?;
-                pager.load_catalog()?
+                chunk_manager.init_catalog_root()?;
+                chunk_manager.load_catalog()?
             }
         };
-        // catalog.validate(); // optional but recommended
 
         let mut db =Self {
-            pager,
             catalog,
+            chunk_manager
         };
-
 
         if(initialize){
             db.seed_schema().unwrap();
@@ -60,7 +57,7 @@ impl Database {
 
     /// Creates a table (disk + memory)
     pub fn create_table(&mut self, name: &str) -> Result<()> {
-        let table = self.pager.create_table(name)?;
+        let table = self.chunk_manager.create_table(name)?;
 
         self.catalog
             .tables_by_name
@@ -83,15 +80,32 @@ impl Database {
         let table_id = *self.catalog.tables_by_name
             .get(table_name)
             .ok_or_else(|| Error::new(std::io::ErrorKind::NotFound, "table not found"))?;
-    
-        let col = self.pager.add_column(table_name, column_name, column_type)?;
-    
+
+        // prevent duplicates
+        if self.catalog
+            .columns_by_table
+            .get(&table_id)
+            .map(|cols| cols.iter().any(|c| c.name == column_name))
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+
+        let cols = self.catalog.columns_by_table.get(&table_id).unwrap();
+
+        let col = self.chunk_manager.add_column(
+            table_id,
+            column_name,
+            column_type,
+            cols.len() as u16
+        )?;
+
         self.catalog
             .columns_by_table
             .entry(table_id)
             .or_default()
             .push(col);
-    
+
         Ok(())
     }
 
@@ -104,129 +118,8 @@ impl Database {
                 ("last_name", ColumnType::Utf8),
                 ("email", ColumnType::Utf8),
                 ("password_hash", ColumnType::Utf8),
-                ("dob", ColumnType::Timestamp),
                 ("is_active", ColumnType::Boolean),
-                ("created_at", ColumnType::Timestamp),
-                ("updated_at", ColumnType::Timestamp),
-                ("deleted_at", ColumnType::Timestamp),
-            ]),
-
-            ("orders", vec![
-                ("id", ColumnType::Integer64),
-                ("user_id", ColumnType::Integer64),
-                ("status", ColumnType::Utf8),
-                ("subtotal", ColumnType::Float64),
-                ("tax", ColumnType::Float64),
-                ("total", ColumnType::Float64),
-                ("currency", ColumnType::Utf8),
-                ("created_at", ColumnType::Timestamp),
-                ("updated_at", ColumnType::Timestamp),
-                ("deleted_at", ColumnType::Timestamp),
-            ]),
-
-            ("products", vec![
-                ("id", ColumnType::Integer64),
-                ("sku", ColumnType::Utf8),
-                ("name", ColumnType::Utf8),
-                ("description", ColumnType::Utf8),
-                ("price", ColumnType::Float64),
-                ("stock", ColumnType::Integer32),
-                ("category_id", ColumnType::Integer64),
-                ("is_active", ColumnType::Boolean),
-                ("created_at", ColumnType::Timestamp),
-                ("updated_at", ColumnType::Timestamp),
-            ]),
-
-            ("categories", vec![
-                ("id", ColumnType::Integer64),
-                ("name", ColumnType::Utf8),
-                ("slug", ColumnType::Utf8),
-                ("parent_id", ColumnType::Integer64),
-                ("sort_order", ColumnType::Integer32),
-                ("is_active", ColumnType::Boolean),
-                ("created_at", ColumnType::Timestamp),
-                ("updated_at", ColumnType::Timestamp),
-                ("deleted_at", ColumnType::Timestamp),
-                ("metadata", ColumnType::Utf8),
-            ]),
-
-            ("payments", vec![
-                ("id", ColumnType::Integer64),
-                ("order_id", ColumnType::Integer64),
-                ("provider", ColumnType::Utf8),
-                ("provider_ref", ColumnType::Utf8),
-                ("amount", ColumnType::Float64),
-                ("currency", ColumnType::Utf8),
-                ("status", ColumnType::Utf8),
-                ("paid_at", ColumnType::Timestamp),
-                ("created_at", ColumnType::Timestamp),
-                ("updated_at", ColumnType::Timestamp),
-            ]),
-
-            ("addresses", vec![
-                ("id", ColumnType::Integer64),
-                ("user_id", ColumnType::Integer64),
-                ("line1", ColumnType::Utf8),
-                ("line2", ColumnType::Utf8),
-                ("city", ColumnType::Utf8),
-                ("country", ColumnType::Utf8),
-                ("postal_code", ColumnType::Utf8),
-                ("is_default", ColumnType::Boolean),
-                ("created_at", ColumnType::Timestamp),
-                ("updated_at", ColumnType::Timestamp),
-            ]),
-
-            ("sessions", vec![
-                ("id", ColumnType::Integer64),
-                ("user_id", ColumnType::Integer64),
-                ("token", ColumnType::Utf8),
-                ("ip_address", ColumnType::Utf8),
-                ("user_agent", ColumnType::Utf8),
-                ("expires_at", ColumnType::Timestamp),
-                ("revoked_at", ColumnType::Timestamp),
-                ("created_at", ColumnType::Timestamp),
-                ("updated_at", ColumnType::Timestamp),
-                ("last_seen_at", ColumnType::Timestamp),
-            ]),
-
-            ("roles", vec![
-                ("id", ColumnType::Integer64),
-                ("name", ColumnType::Utf8),
-                ("description", ColumnType::Utf8),
-                ("is_system", ColumnType::Boolean),
-                ("created_at", ColumnType::Timestamp),
-                ("updated_at", ColumnType::Timestamp),
-                ("deleted_at", ColumnType::Timestamp),
-                ("permissions", ColumnType::Utf8),
-                ("priority", ColumnType::Integer32),
-                ("metadata", ColumnType::Utf8),
-            ]),
-
-            ("user_roles", vec![
-                ("id", ColumnType::Integer64),
-                ("user_id", ColumnType::Integer64),
-                ("role_id", ColumnType::Integer64),
-                ("assigned_by", ColumnType::Integer64),
-                ("assigned_at", ColumnType::Timestamp),
-                ("expires_at", ColumnType::Timestamp),
-                ("is_active", ColumnType::Boolean),
-                ("created_at", ColumnType::Timestamp),
-                ("updated_at", ColumnType::Timestamp),
-                ("deleted_at", ColumnType::Timestamp),
-            ]),
-
-            ("audit_logs", vec![
-                ("id", ColumnType::Integer64),
-                ("actor_id", ColumnType::Integer64),
-                ("action", ColumnType::Utf8),
-                ("entity", ColumnType::Utf8),
-                ("entity_id", ColumnType::Integer64),
-                ("payload", ColumnType::Utf8),
-                ("ip_address", ColumnType::Utf8),
-                ("created_at", ColumnType::Timestamp),
-                ("request_id", ColumnType::Utf8),
-                ("severity", ColumnType::Integer32),
-            ]),
+            ])
         ];
 
         for (table_name, columns) in tables {
@@ -243,6 +136,100 @@ impl Database {
             }
         }
 
+        // let test_row = vec![
+        //     ("id", Value::Int64(1)),
+        //     ("first_name", Value::String("Noubar".into())),
+        //     ("last_name", Value::String("Kassabian".into())),
+        //     ("email", Value::String("noubar@example.com".into())),
+        //     ("password_hash", Value::String("hashed_password_123".into())),
+        //     ("is_active", Value::Bool(true)),
+        // ];
+
+        // self.append_row("users", test_row)?;
+
         Ok(())
     }
 }
+
+// pub enum EncodedValue {
+//     Bytes(Vec<u8>),
+//     Null,
+// }
+//
+// #[derive(Debug, Clone)]
+// pub enum Value {
+//     Int32(i32),
+//     Int64(i64),
+//     Float64(f64),
+//     Bool(bool),
+//     String(String),
+//     Null,
+// }
+
+// impl Value {
+//     pub fn matches_column_type(&self, column_type: ColumnType) -> bool {
+//         match (self, column_type) {
+//             (Value::Int32(_), ColumnType::Integer32) => true,
+//             (Value::Int64(_), ColumnType::Integer64) => true,
+//             (Value::Float64(_), ColumnType::Float64) => true,
+//             (Value::Bool(_), ColumnType::Boolean) => true,
+//             (Value::String(_), ColumnType::Utf8) => true,
+//             (Value::Null, _) => true,
+//             _ => false,
+//         }
+//     }
+//
+//     pub fn encode(&self) -> EncodedValue {
+//         match self {
+//             Value::Int32(v) => EncodedValue::Bytes(v.to_le_bytes().to_vec()),
+//             Value::Int64(v) => EncodedValue::Bytes(v.to_le_bytes().to_vec()),
+//             Value::Float64(v) => EncodedValue::Bytes(v.to_le_bytes().to_vec()),
+//             Value::Bool(v) => EncodedValue::Bytes(vec![*v as u8]),
+//             Value::String(s) => {
+//                 let mut buf = Vec::with_capacity(4 + s.len());
+//                 buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
+//                 buf.extend_from_slice(s.as_bytes());
+//                 EncodedValue::Bytes(buf)
+//             }
+//             Value::Null => EncodedValue::Null,
+//         }
+//     }
+// }
+//
+// pub struct ActiveChunk {
+//     // Identity
+//     pub table_id: u32,
+//     pub column_ordinal: u16,
+//
+//     // Physical layout
+//     pub first_page_id: u32,
+//     pub pages: Vec<u32>, // chunk may span multiple pages
+//
+//     // Runtime state
+//     pub value_count: u32,
+//
+//     // Runtime stats (finalized on seal)
+//     pub min: Option<Value>,
+//     pub max: Option<Value>,
+// }
+//
+// impl ActiveChunk {
+//     pub fn append(&mut self, database: Database, value: &Value) -> Result<()> {
+//         let encoded = value.encode();
+//
+//         let bytes = match encoded {
+//             EncodedValue::Bytes(bytes) => bytes,
+//             EncodedValue::Null => return Ok(()),
+//         };
+//
+//         let required_space = bytes.len() as u64;
+//
+//         let page_id = self.pages.last().unwrap().clone() as u64;
+//         let page = database.pager.read_page(page_id).unwrap();
+//         let page_header = ChunkDataHeader::read_from(&page.buf[PageHeader::SIZE..PageHeader::SIZE + ChunkDataHeader::SIZE]);
+//
+//         if required_space > page.header
+//
+//
+//     }
+// }
